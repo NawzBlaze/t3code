@@ -6983,6 +6983,8 @@ export default function ChatView(props: ChatViewProps) {
           resetAt: serverRuntime.usageLimitResetAt ?? null,
           stoppedAt: activeThreadShell.latestRun.completedAt ?? activeThreadShell.updatedAt,
           recovery: activeThreadShell.limitRecovery ?? null,
+          snoozedUntil: activeThreadShell.snoozedUntil,
+          nowMs: Date.parse(`${nowMinute}:00Z`),
           explanation: serverRuntime.lastError,
           onChange: async (limitRecovery) => {
             const result = await updateThreadMetadata({
