@@ -1944,6 +1944,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         failure: {
           class: "usage_limit" as const,
           message: "Plan limit reached.",
+          resetAt: "2099-01-01T00:00:00.000Z",
           code: "usageLimitExceeded",
           retryable: null,
         },
@@ -1967,6 +1968,10 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         for (const shell of [memoryShell, sqlShell]) {
           assert.equal(shell.lastError, lastError);
           assert.equal(shell.lastErrorClass, lastErrorClass);
+          assert.equal(
+            shell.usageLimitResetAt,
+            lastErrorClass === "usage_limit" ? "2099-01-01T00:00:00.000Z" : null,
+          );
         }
         assert.isNull(shells.threads.find((row) => row.id === otherThreadId)!.lastErrorClass);
       });

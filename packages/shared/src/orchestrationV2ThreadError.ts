@@ -37,7 +37,11 @@ export function threadErrorSummary(
   failure: OrchestrationV2ProviderFailure | null,
   sessionError: string | null,
 ) {
+  const currentFailure =
+    sessionError !== null && sessionError !== failure?.message ? null : failure;
   return {
+    usageLimitResetAt:
+      currentFailure?.class === "usage_limit" ? (currentFailure.resetAt ?? null) : null,
     lastError: sessionError ?? failure?.message ?? null,
     lastErrorClass:
       sessionError !== null && sessionError !== failure?.message ? null : (failure?.class ?? null),

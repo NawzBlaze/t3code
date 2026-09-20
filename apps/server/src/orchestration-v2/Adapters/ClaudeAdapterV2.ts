@@ -2357,6 +2357,7 @@ interface ActiveClaudeTurnContext {
   readonly announcedUsageLimits: Set<string>;
   authenticationFailureMessage: string | undefined;
   readonly rejectedRateLimitTypes: Set<string>;
+  readonly rateLimitResetTimes: Map<string, string | null>;
   latestAssistantRateLimited: boolean;
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
@@ -4598,12 +4599,20 @@ export function makeClaudeAdapterV2(
             if (context !== null) {
               if (blocked) {
                 context.rejectedRateLimitTypes.add(limitType);
+                const resetMs = (rateLimitInfo.resetsAt ?? NaN) * 1000;
+                context.rateLimitResetTimes.set(
+                  limitType,
+                  Number.isFinite(resetMs) && resetMs > 0 && resetMs < 8.64e15
+                    ? DateTime.formatIso(DateTime.makeUnsafe(resetMs))
+                    : null,
+                );
               } else if (
                 rateLimitInfo.status === "allowed" ||
                 rateLimitInfo.status === "allowed_warning" ||
                 overageAllowed
               ) {
                 context.rejectedRateLimitTypes.delete(limitType);
+                context.rateLimitResetTimes.delete(limitType);
               }
             }
             // Rejected windows pause the SDK without ending its turn. Overage
@@ -5244,15 +5253,24 @@ export function makeClaudeAdapterV2(
               (usageLimited
                 ? "Claude usage limit reached. Send the message again once the limit resets."
                 : undefined);
+            const resetTimes = Array.from(context.rateLimitResetTimes.values());
+            const resetAt =
+              resetTimes.length > 0 && resetTimes.every((time) => time !== null)
+                ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
+                : null;
             const resultFailure = interrupted
               ? null
               : providerFailureFromResult(message, failureHint, usageLimited);
+            const terminalFailure =
+              resultFailure?.class === "usage_limit"
+                ? { ...resultFailure, resetAt }
+                : resultFailure;
             yield* finalizeActiveTurn({
               context,
               status: interrupted ? "interrupted" : terminalStatusFromResult(message, failureHint),
               completedAt,
               result: message,
-              ...(resultFailure === null ? {} : { failure: resultFailure }),
+              ...(terminalFailure === null ? {} : { failure: terminalFailure }),
             });
           }
         });
@@ -5723,6 +5741,7 @@ export function makeClaudeAdapterV2(
               announcedUsageLimits: new Set(),
               authenticationFailureMessage: undefined,
               rejectedRateLimitTypes: new Set(),
+              rateLimitResetTimes: new Map(),
               latestAssistantRateLimited: false,
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),

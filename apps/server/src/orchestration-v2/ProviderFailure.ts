@@ -10,7 +10,7 @@ import type {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import type * as DateTime from "effect/DateTime";
+import * as DateTime from "effect/DateTime";
 
 import type { IdAllocatorV2Shape } from "./IdAllocator.ts";
 
@@ -94,6 +94,7 @@ export function makeProviderFailure(input: {
   readonly code?: string | null | undefined;
   readonly class?: OrchestrationV2ProviderFailureClass;
   readonly retryable?: boolean | null;
+  readonly resetAt?: string | null;
 }): OrchestrationV2ProviderFailure {
   const rawMessage = input.message ?? DEFAULT_PROVIDER_FAILURE_MESSAGE;
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
@@ -106,6 +107,11 @@ export function makeProviderFailure(input: {
     message: message || DEFAULT_PROVIDER_FAILURE_MESSAGE,
     code,
     retryable: input.retryable ?? null,
+    ...(input.class === "usage_limit" &&
+    input.resetAt != null &&
+    Number.isFinite(Date.parse(input.resetAt))
+      ? { resetAt: DateTime.formatIso(DateTime.makeUnsafe(input.resetAt)) }
+      : {}),
   };
 }
 
