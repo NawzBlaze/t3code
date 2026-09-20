@@ -137,7 +137,7 @@ export function makeProviderFailureTurnItem(input: {
     parentItemId: null,
     ordinal: input.itemOrdinal,
     status: "failed",
-    title: "Provider error",
+    title: input.failure.class === "usage_limit" ? "Usage limit reached" : "Provider error",
     startedAt: input.retryStartedAt ?? input.occurredAt,
     completedAt: input.occurredAt,
     updatedAt: input.occurredAt,
@@ -170,7 +170,7 @@ export function makeProviderRetryTurnItem(input: {
   if (input.status === "completed") {
     title = "Provider recovered";
   } else if (input.status === "failed") {
-    title = "Provider error";
+    title = input.failure.class === "usage_limit" ? "Usage limit reached" : "Provider error";
   } else if (input.status === "interrupted" || input.status === "cancelled") {
     title = "Provider retry stopped";
   }

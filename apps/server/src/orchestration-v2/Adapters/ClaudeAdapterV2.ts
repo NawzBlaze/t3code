@@ -2101,6 +2101,7 @@ function terminalStatusFromResult(
     // The SDK reports API-level failures (401 auth, 529 overloaded, …) as
     // subtype "success" with is_error set; the turn produced no real work.
     return isOverloadedResult(message) ||
+      message.api_error_status === 429 ||
       terminalResultError(message.terminal_reason, failureHint) !== undefined ||
       (message.is_error && failureHint !== undefined)
       ? "failed"
@@ -2138,16 +2139,25 @@ function isClaudeTaskNotificationOriginResult(message: SDKMessage): message is S
 function providerFailureFromResult(
   message: SDKResultMessage,
   failureHint?: string,
+  usageLimited = false,
 ): OrchestrationV2ProviderFailure | null {
+  const failureClass =
+    message.terminal_reason === "blocking_limit" ||
+    (message.subtype === "success" && message.api_error_status === 429) ||
+    usageLimited
+      ? "usage_limit"
+      : "provider_error";
   const listedError = resultUserFacingError(message);
   const structuredError = isOverloadedResult(message)
     ? "Claude API is overloaded (529). Try again shortly."
-    : terminalResultError(message.terminal_reason, failureHint);
+    : message.subtype === "success" && message.api_error_status === 429
+      ? "Claude API rate limit reached. Try again later."
+      : terminalResultError(message.terminal_reason, failureHint);
   if (message.subtype !== "success") {
     return makeProviderFailure({
       message: listedError ?? structuredError ?? message.errors.join("\n"),
       code: message.subtype,
-      class: "provider_error",
+      class: failureClass,
     });
   }
   if (!message.is_error && structuredError === undefined) {
@@ -2160,7 +2170,7 @@ function providerFailureFromResult(
       apiErrorStatus === null
         ? (message.terminal_reason ?? "sdk_result_error")
         : `api_error_${apiErrorStatus}`,
-    class: "provider_error",
+    class: failureClass,
     retryable: apiErrorStatus === 429 || apiErrorStatus === 529 ? true : null,
   });
 }
@@ -2173,7 +2183,12 @@ function providerFailureFromApiRetry(message: SDKAPIRetryMessage): Orchestration
       message.error_status === null
         ? message.error
         : `api_error_${Math.trunc(message.error_status)}`,
-    class: message.error_status === null ? "transport_error" : "provider_error",
+    class:
+      message.error_status === 429
+        ? "usage_limit"
+        : message.error_status === null
+          ? "transport_error"
+          : "provider_error",
     retryable: true,
   });
 }
@@ -5215,14 +5230,23 @@ export function makeClaudeAdapterV2(
               next.delete(context.providerTurnId);
               return next;
             });
+            const usageLimited =
+              context.authenticationFailureMessage === undefined &&
+              (context.rejectedRateLimitTypes.size > 0 || context.latestAssistantRateLimited) &&
+              (message.subtype !== "success" ||
+                message.api_error_status == null ||
+                message.api_error_status === 429) &&
+              (message.terminal_reason == null ||
+                message.terminal_reason === "api_error" ||
+                message.terminal_reason === "blocking_limit");
             const failureHint =
               context.authenticationFailureMessage ??
-              (context.rejectedRateLimitTypes.size > 0 || context.latestAssistantRateLimited
+              (usageLimited
                 ? "Claude usage limit reached. Send the message again once the limit resets."
                 : undefined);
             const resultFailure = interrupted
               ? null
-              : providerFailureFromResult(message, failureHint);
+              : providerFailureFromResult(message, failureHint, usageLimited);
             yield* finalizeActiveTurn({
               context,
               status: interrupted ? "interrupted" : terminalStatusFromResult(message, failureHint),

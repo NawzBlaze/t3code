@@ -338,6 +338,31 @@ describe("buildThreadFeed", () => {
     expect(presented.some((entry) => entry.type === "run-fold")).toBe(false);
   });
 
+  it("presents a usage-limit stop as a warning while preserving its explanation", () => {
+    const message = "Plan usage limit reached. Try again after reset.";
+    const entries = buildThreadFeed([
+      projected(
+        {
+          ...base("item-limit", "2026-06-20T00:00:02.000Z", 1),
+          type: "error",
+          status: "failed",
+          title: "Usage limit reached",
+          failure: { class: "usage_limit", message, code: "usageLimitExceeded", retryable: null },
+        },
+        0,
+      ),
+    ]);
+    const activity = entries.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    )[0];
+    expect(activity).toMatchObject({
+      summary: "Usage limit reached",
+      status: "neutral",
+      icon: "warning",
+    });
+    expect(activity?.getFullDetail()).toContain(message);
+  });
+
   it("presents provider retries as visible work-log activity", () => {
     const retryBase = {
       ...base("item-provider-retry", "2026-06-20T00:00:02.000Z", 1),

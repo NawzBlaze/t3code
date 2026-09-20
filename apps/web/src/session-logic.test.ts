@@ -99,6 +99,13 @@ describe("V2 session presentation", () => {
       },
     } satisfies Extract<OrchestrationV2TurnItem, { readonly type: "error" }>;
 
+    expect(
+      providerErrorPresentation({
+        ...retryItem,
+        status: "failed",
+        failure: { ...retryItem.failure, class: "usage_limit" },
+      }),
+    ).toMatchObject({ label: "Usage limit reached after 2/10 retries" });
     expect(providerErrorPresentation(retryItem)).toEqual({
       label: "Retrying provider (2/10)",
       detail: "Claude API overloaded. Retrying in 1.5s.",
