@@ -307,7 +307,7 @@ describe("codexUsageLimitResetAt", () => {
         primary: { usedPercent: 100, resetsAt: 2000000000 },
         secondary: { usedPercent: 100, resetsAt: 2000100000 },
       }),
-    ).toBe("2033-05-19T07:46:40.000Z");
+    ).toBe("2033-05-19T07:20:00.000Z");
     expect(codexUsageLimitResetAt({ primary: { usedPercent: 100 } })).toBeNull();
     expect(
       codexUsageLimitResetAt({ primary: { usedPercent: 50, resetsAt: 2000000000 } }),

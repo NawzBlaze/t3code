@@ -4888,6 +4888,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       notification: true,
       expectedClass: "provider_error",
     },
+    {
+      name: "known-reset",
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
+    {
+      name: "late-reset",
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
     { name: "retry", code: "usageLimitExceeded", notification: true, expectedClass: "usage_limit" },
   ] as const) {
     it.effect(`classifies Codex terminal failures from ${scenario.name} evidence`, () =>
@@ -4896,10 +4908,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const nativeThreadId = `native-limit-${scenario.name}`;
           const nativeTurnId = `turn-limit-${scenario.name}`;
           const message = "Provider stopped this request.";
+          const resetAt = "2033-05-19T07:20:00.000Z";
+          const snapshot = {
+            type: "emit_inbound" as const,
+            label: "account/rateLimits/updated",
+            frame: {
+              method: "account/rateLimits/updated",
+              params: {
+                rateLimits: {
+                  limitId: "codex",
+                  primary: { usedPercent: 100, resetsAt: 2000100000, windowDurationMins: 300 },
+                },
+              },
+            },
+          };
           const transcript = makeCodexReplayTranscript({
             scenario: `codex-limit-${scenario.name}`,
             entries: [
               ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
+              ...(scenario.name === "known-reset" ? [snapshot] : []),
               ...(scenario.notification
                 ? [
                     {
@@ -4938,9 +4965,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   },
                 },
               },
+              ...(scenario.name === "late-reset" ? [snapshot] : []),
             ],
           });
-          const harness = yield* makeCodexReplayHarness(transcript);
+          const resetReceipt = yield* Deferred.make<void>();
+          const harness = yield* makeCodexReplayHarness(transcript, (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "error" &&
+            event.turnItem.failure.resetAt === resetAt
+              ? Deferred.succeed(resetReceipt, undefined)
+              : Effect.void,
+          );
           yield* harness.runtime.startTurn(
             makeCodexTestTurnInput({
               threadId: harness.threadId,
@@ -4956,6 +4991,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           if (terminal?.status !== "failed") return;
           assert.equal(terminal.failure.class, scenario.expectedClass);
           assert.equal(terminal.threadDisposition, "reusable");
+          if (scenario.name === "known-reset") assert.equal(terminal.failure.resetAt, resetAt);
+          if (scenario.name === "late-reset") {
+            yield* Deferred.await(resetReceipt);
+            const item = harness.events.find(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.failure.resetAt === resetAt,
+            );
+            assert.isDefined(item);
+          }
           if (scenario.name === "retry") assert.equal(terminal.retry?.attempt, 1);
         }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
       ),

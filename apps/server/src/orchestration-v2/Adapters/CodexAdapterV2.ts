@@ -43,6 +43,7 @@ import type {
   ProviderApprovalDecision,
   ProviderApprovalOption,
   ProviderRequestKind,
+  ProviderThreadId,
   ProviderTurnId,
   ProviderInstanceId,
   RuntimeMode,
@@ -98,7 +99,11 @@ import {
   type ProviderContinuationRequest,
   ProviderContinuationRequests,
 } from "../ProviderContinuationRequests.ts";
-import { makeProviderFailure, makeProviderRetryTurnItem } from "../ProviderFailure.ts";
+import {
+  makeProviderFailure,
+  makeProviderFailureTurnItem,
+  makeProviderRetryTurnItem,
+} from "../ProviderFailure.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
 import {
   isProviderNativeImageAttachment,
@@ -1486,6 +1491,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         });
         const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
+        const limitedTurnItems = yield* Ref.make(
+          new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
+        );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
@@ -1632,6 +1640,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               subagent: null,
               startedAt: input.startedAt,
             };
+            yield* Ref.update(limitedTurnItems, (current) => {
+              const next = new Map(current);
+              next.delete(context.providerThread.id);
+              return next;
+            });
             beginTurnTokenUsage(context);
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
@@ -3562,6 +3575,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             yield* Ref.update(rateLimitSnapshot, (previous) =>
               mergeCodexRateLimits(previous, payload.rateLimits),
             );
+            const resetAt = codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot));
+            for (const item of (yield* Ref.get(limitedTurnItems)).values()) {
+              if (item.failure.resetAt === resetAt) continue;
+              const updated = {
+                ...item,
+                updatedAt: yield* DateTime.now,
+                failure: { ...item.failure, resetAt },
+              };
+              yield* Ref.update(limitedTurnItems, (current) =>
+                new Map(current).set(item.providerThreadId!, updated),
+              );
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: updated,
+              });
+            }
             const update = codexRateLimitsToUpdate(payload.rateLimits);
             if (update && adapterOptions.onUsageLimits) {
               const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -4670,6 +4700,40 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           },
         );
 
+        const emitRootTerminal = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+          event: CodexRootTerminalEvent,
+        ) {
+          const current =
+            event.status === "failed" && event.failure.class === "usage_limit"
+              ? {
+                  ...event,
+                  failure: {
+                    ...event.failure,
+                    resetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
+                  },
+                }
+              : event;
+          yield* emitProviderEvent(current);
+          if (current.status === "failed" && current.failure.class === "usage_limit") {
+            const item = makeProviderFailureTurnItem({
+              idAllocator,
+              driver: CODEX_PROVIDER,
+              threadId: context.input.threadId,
+              runId: context.input.runId,
+              nodeId: context.input.rootNodeId,
+              providerThreadId: current.providerThreadId,
+              providerTurnId: current.providerTurnId,
+              itemOrdinal: current.failureItemOrdinal,
+              failure: current.failure,
+              occurredAt: yield* DateTime.now,
+            });
+            yield* Ref.update(limitedTurnItems, (items) =>
+              new Map(items).set(context.providerThread.id, item),
+            );
+          }
+        });
+
         const emitOrDeferRootTerminal = Effect.fn("CodexAdapterV2.emitOrDeferRootTerminal")(
           function* (input: {
             readonly context: ActiveCodexTurnContext;
@@ -4691,7 +4755,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return;
             }
-            yield* emitProviderEvent(event);
+            yield* emitRootTerminal(input.context, event);
           },
         );
 
@@ -4700,7 +4764,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const activeTurnContexts = Array.from((yield* Ref.get(activeTurns)).values());
             const readyEvents = yield* Ref.modify(deferredRootTerminals, (current) => {
               const updated = new Map(current);
-              const ready: Array<CodexRootTerminalEvent> = [];
+              const ready: Array<{
+                context: ActiveCodexTurnContext;
+                event: CodexRootTerminalEvent;
+              }> = [];
               for (const [nativeTurnId, deferred] of current) {
                 if (
                   !activeTurnContexts.some((candidate) =>
@@ -4708,13 +4775,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   )
                 ) {
                   updated.delete(nativeTurnId);
-                  ready.push(deferred.event);
+                  ready.push(deferred);
                 }
               }
               return [ready, updated] as const;
             });
-            for (const event of readyEvents) {
-              yield* emitProviderEvent(event);
+            for (const ready of readyEvents) {
+              yield* emitRootTerminal(ready.context, ready.event);
             }
           },
         );
