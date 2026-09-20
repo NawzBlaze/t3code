@@ -337,12 +337,15 @@ export const layer = Layer.effect(
               ] as const);
             }
             return Effect.gen(function* () {
-              // Provide the captured factory services first, then the child scope
-              // last so instance finalizers are owned by the unregisterable scope.
+              // Provide the child scope to the instance, then replace the
+              // rest of the environment with the captured factory services.
+              // Reversed, `Effect.provide(factoryContext)` wipes the Scope
+              // service and instance finalizers anchor to the pool layer
+              // scope instead of the unregisterable instance scope.
               const instanceScope = yield* Scope.fork(layerScope, "sequential");
               const instance = yield* DesktopBackendManager.makeBackendInstance(spec).pipe(
-                Effect.provide(factoryContext),
                 Scope.provide(instanceScope),
+                Effect.provide(factoryContext),
               );
               const next = new Map(current);
               next.set(spec.id, {

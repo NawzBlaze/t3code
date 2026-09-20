@@ -4,9 +4,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
+import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -43,19 +45,26 @@ function makeStubInstance(
 
 function makePoolLayer(
   labelRef: Ref.Ref<string>,
+  overrides: {
+    readonly spawnerLayer?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>;
+    readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
+    readonly fileSystemLayer?: Layer.Layer<FileSystem.FileSystem>;
+  } = {},
 ): Layer.Layer<DesktopBackendPool.DesktopBackendPool> {
   return DesktopBackendPool.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
-        FileSystem.layerNoop({}),
-        Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected child process spawn")),
-        ),
-        Layer.succeed(
-          HttpClient.HttpClient,
-          HttpClient.make(() => Effect.die("unexpected HTTP request")),
-        ),
+        overrides.fileSystemLayer ?? FileSystem.layerNoop({ exists: () => Effect.succeed(true) }),
+        overrides.spawnerLayer ??
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() => Effect.die("unexpected child process spawn")),
+          ),
+        overrides.httpClientLayer ??
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("unexpected HTTP request")),
+          ),
         Layer.succeed(DesktopObservability.DesktopBackendOutputLogFactory, {
           forInstance: () =>
             Effect.succeed({
@@ -104,6 +113,58 @@ function makePoolLayer(
       ),
     ),
   );
+}
+
+// Mirror of the manager test's baseConfig so a registered backend can spawn
+// through `runBackendProcess` with a stubbed spawner.
+const poolTestConfig: DesktopBackendStartConfig = {
+  executablePath: "/electron",
+  args: ["/server/bin.mjs", "--bootstrap-fd", "3"],
+  entryPath: "/server/bin.mjs",
+  cwd: "/server",
+  env: { ELECTRON_RUN_AS_NODE: "1" },
+  extendEnv: true,
+  bootstrap: {
+    mode: "desktop",
+    noBrowser: true,
+    port: 3773,
+    t3Home: "/tmp/t3",
+    host: "127.0.0.1",
+    desktopBootstrapToken: "token",
+    tailscaleServeEnabled: false,
+    tailscaleServePort: 443,
+    desktopTelemetryFd: 4,
+    desktopTelemetryControlFd: 5,
+  },
+  bootstrapDelivery: "fd3",
+  httpBaseUrl: new URL("http://127.0.0.1:3773"),
+  captureOutput: true,
+  preflightFailure: Option.none(),
+};
+
+function makePoolProcess(options?: {
+  readonly exitCode?: Effect.Effect<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>;
+}): ChildProcessSpawner.ChildProcessHandle {
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(123),
+    stdout: Stream.empty,
+    stderr: Stream.empty,
+    all: Stream.empty,
+    exitCode: options?.exitCode ?? Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.void,
+    stdin: Sink.drain,
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void),
+  });
+}
+
+function responseForRequest(
+  request: HttpClientRequest.HttpClientRequest,
+  status: number,
+): HttpClientResponse.HttpClientResponse {
+  return HttpClientResponse.fromWeb(request, new Response(null, { status }));
 }
 
 describe("DesktopBackendPool", () => {
@@ -156,4 +217,66 @@ describe("DesktopBackendPool", () => {
       }),
     ),
   );
+
+  let registeredSpawns = 0;
+  const registeredLayer = makePoolLayer(Ref.makeUnsafe("Windows"), {
+    spawnerLayer: Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() =>
+        Effect.sync(() => {
+          registeredSpawns += 1;
+          return makePoolProcess({ exitCode: Effect.never });
+        }),
+      ),
+    ),
+    httpClientLayer: Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => Effect.succeed(responseForRequest(request, 200))),
+    ),
+    fileSystemLayer: FileSystem.layerNoop({ exists: () => Effect.succeed(true) }),
+  });
+
+  // `it.layer` builds the pool layer once into a suite-lifetime scope. That
+  // mirrors main.ts, where the merged application layer keeps the pool's
+  // layer scope open for the process lifetime. An `Effect.provide` per test
+  // would close that scope before register runs, which is not the state the
+  // pool has in production.
+  it.layer(registeredLayer)("unregistering a started registered backend", (it) => {
+    it.effect("stops the backend instead of leaving it supervised", () =>
+      Effect.gen(function* () {
+        const pool = yield* DesktopBackendPool.DesktopBackendPool;
+
+        const spec: DesktopBackendPool.BackendInstanceSpec = {
+          id: DesktopBackendPool.BackendInstanceId("wsl:ubuntu"),
+          label: Effect.succeed("WSL (Ubuntu)"),
+          configResolve: Effect.succeed(poolTestConfig),
+        };
+        const instance = yield* pool.register(spec);
+
+        yield* instance.start;
+        // start() forks the managed process, so the spawn runs on a separate
+        // fiber; yield until it lands instead of asserting immediately.
+        let spawned = registeredSpawns > 0;
+        let spawnWait = 0;
+        while (!spawned && spawnWait < 500) {
+          spawnWait += 1;
+          yield* Effect.yieldNow;
+          spawned = registeredSpawns > 0;
+        }
+        assert.equal(registeredSpawns, 1);
+        assert.equal((yield* instance.snapshot).desiredRunning, true);
+
+        yield* pool.unregister(instance.id);
+
+        assert.isTrue(Option.isNone(yield* pool.get(instance.id)));
+        // Closing the instance scope must run the instance's auto-stop
+        // finalizer and interrupt the pooled supervisor. If the instance were
+        // anchored to the pool layer scope instead (the pre-fix pipe order),
+        // desiredRunning would stay true and the backend would keep running
+        // after the settings flip that triggered unregister.
+        assert.equal((yield* instance.snapshot).desiredRunning, false);
+        assert.equal(registeredSpawns, 1);
+      }),
+    );
+  });
 });
