@@ -4900,6 +4900,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       notification: false,
       expectedClass: "usage_limit",
     },
+    {
+      name: "matching-details",
+      code: "usageLimitExceeded",
+      notification: true,
+      expectedClass: "usage_limit",
+    },
+    {
+      name: "deferred-reset",
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
     { name: "retry", code: "usageLimitExceeded", notification: true, expectedClass: "usage_limit" },
   ] as const) {
     it.effect(`classifies Codex terminal failures from ${scenario.name} evidence`, () =>
@@ -4926,7 +4938,45 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             scenario: `codex-limit-${scenario.name}`,
             entries: [
               ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
-              ...(scenario.name === "known-reset" ? [snapshot] : []),
+              ...(scenario.name === "known-reset" || scenario.name === "deferred-reset"
+                ? [snapshot]
+                : []),
+              ...(scenario.name === "deferred-reset"
+                ? [
+                    {
+                      type: "emit_inbound" as const,
+                      label: "item/completed/subAgentActivity-started",
+                      frame: {
+                        method: "item/completed",
+                        params: {
+                          threadId: nativeThreadId,
+                          turnId: nativeTurnId,
+                          item: {
+                            type: "subAgentActivity",
+                            id: "limit-child-spawn",
+                            kind: "started",
+                            agentThreadId: "native-limit-child",
+                            agentPath: "/root/limit_child",
+                          },
+                        },
+                      },
+                    },
+                    {
+                      type: "emit_inbound" as const,
+                      label: "turn/started/child",
+                      frame: {
+                        method: "turn/started",
+                        params: {
+                          threadId: "native-limit-child",
+                          turn: makeCodexReplayTurn({
+                            id: "limit-child-turn",
+                            status: "inProgress",
+                          }),
+                        },
+                      },
+                    },
+                  ]
+                : []),
               ...(scenario.notification
                 ? [
                     {
@@ -4941,7 +4991,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                           error: {
                             message,
                             codexErrorInfo: scenario.code,
-                            additionalDetails: null,
+                            additionalDetails:
+                              scenario.name === "matching-details"
+                                ? "Detailed provider allowance explanation."
+                                : null,
                           },
                         },
                       },
@@ -4959,13 +5012,49 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                       ...makeCodexReplayTurn({ id: nativeTurnId, status: "failed" }),
                       error: {
                         message: scenario.name === "replacement" ? "A different failure." : message,
-                        ...(scenario.notification ? {} : { codexErrorInfo: scenario.code }),
+                        ...(scenario.notification && scenario.name !== "matching-details"
+                          ? {}
+                          : { codexErrorInfo: scenario.code }),
                       },
                     },
                   },
                 },
               },
               ...(scenario.name === "late-reset" ? [snapshot] : []),
+              ...(scenario.name === "deferred-reset"
+                ? [
+                    {
+                      ...snapshot,
+                      frame: {
+                        method: "account/rateLimits/updated",
+                        params: {
+                          rateLimits: {
+                            limitId: "codex",
+                            primary: {
+                              usedPercent: 100,
+                              resetsAt: 2000200000,
+                              windowDurationMins: 300,
+                            },
+                          },
+                        },
+                      },
+                    },
+                    {
+                      type: "emit_inbound" as const,
+                      label: "turn/completed/child",
+                      frame: {
+                        method: "turn/completed",
+                        params: {
+                          threadId: "native-limit-child",
+                          turn: makeCodexReplayTurn({
+                            id: "limit-child-turn",
+                            status: "completed",
+                          }),
+                        },
+                      },
+                    },
+                  ]
+                : []),
             ],
           });
           const resetReceipt = yield* Deferred.make<void>();
@@ -4991,7 +5080,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           if (terminal?.status !== "failed") return;
           assert.equal(terminal.failure.class, scenario.expectedClass);
           assert.equal(terminal.threadDisposition, "reusable");
-          if (scenario.name === "known-reset") assert.equal(terminal.failure.resetAt, resetAt);
+          if (scenario.name === "known-reset" || scenario.name === "deferred-reset")
+            assert.equal(terminal.failure.resetAt, resetAt);
+          if (scenario.name === "matching-details")
+            assert.equal(terminal.failure.message, "Detailed provider allowance explanation.");
           if (scenario.name === "late-reset") {
             yield* Deferred.await(resetReceipt);
             const item = harness.events.find(

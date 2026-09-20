@@ -4647,10 +4647,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             if (terminalStatus === "failed") {
               const previousFailure = input.context.latestProviderFailure ?? input.providerRetry;
               const failure =
-                input.failureCode === undefined &&
                 previousFailure !== undefined &&
                 (input.failureMessage === undefined ||
-                  input.failureMessage === previousFailure.nativeMessage)
+                  input.failureMessage === previousFailure.nativeMessage) &&
+                (input.failureCode === undefined ||
+                  input.failureCode === previousFailure.failure.code)
                   ? previousFailure.failure
                   : makeProviderFailure({
                       message: input.failureMessage,
@@ -4711,7 +4712,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   ...event,
                   failure: {
                     ...event.failure,
-                    resetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
+                    resetAt:
+                      event.failure.resetAt ??
+                      codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
                   },
                 }
               : event;
