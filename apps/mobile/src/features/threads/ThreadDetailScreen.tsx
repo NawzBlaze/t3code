@@ -1,3 +1,4 @@
+import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { useNavigation } from "@react-navigation/native";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -1089,6 +1090,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     />
                   </Animated.View>
                 ) : null}
+                <UsageLimitRecoveryCard
+                  key={props.selectedThread.latestRun?.runId}
+                  thread={props.selectedThread}
+                  environmentId={props.environmentId}
+                />
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}
