@@ -481,7 +481,7 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
       return {
         ...common,
         ...presentation,
-        ...(item.failure.class === "usage_limit"
+        ...(item.failure.class === "usage_limit" && item.status !== "completed"
           ? { sourceActivityKind: "runtime.warning" }
           : item.retry === undefined
             ? { sourceActivityKind: "runtime.error" }

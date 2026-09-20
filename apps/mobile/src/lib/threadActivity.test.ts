@@ -363,88 +363,97 @@ describe("buildThreadFeed", () => {
     expect(activity?.getFullDetail()).toContain(message);
   });
 
-  it("presents provider retries as visible work-log activity", () => {
-    const retryBase = {
-      ...base("item-provider-retry", "2026-06-20T00:00:02.000Z", 1),
-      type: "error" as const,
-      failure: {
-        class: "transport_error" as const,
-        message: "The response stream disconnected.",
-        code: "responseStreamDisconnected",
-        retryable: true,
-      },
-      retry: {
-        attempt: 2,
-        maxAttempts: 5,
-        retryDelayMs: null,
-      },
-    };
-    const runningFeed = buildThreadFeed([
-      projected(
-        {
-          ...retryBase,
-          status: "running",
-          title: "Provider retry",
-          completedAt: null,
+  it.each(["transport_error", "usage_limit"] as const)(
+    "presents %s retries and clears warning markers on recovery",
+    (failureClass) => {
+      const retryBase = {
+        ...base("item-provider-retry", "2026-06-20T00:00:02.000Z", 1),
+        type: "error" as const,
+        failure: {
+          class: failureClass,
+          message: "The response stream disconnected.",
+          code: "responseStreamDisconnected",
+          retryable: true,
         },
-        0,
-      ),
-    ]);
-    const recoveredFeed = buildThreadFeed([
-      projected(
-        {
-          ...retryBase,
-          status: "completed",
-          title: "Provider recovered",
+        retry: {
+          attempt: 2,
+          maxAttempts: 5,
+          retryDelayMs: null,
         },
-        0,
-      ),
-    ]);
-    const failedFeed = buildThreadFeed([
-      projected(
-        {
-          ...retryBase,
-          status: "failed",
-          title: "Provider retry failed",
-        },
-        0,
-      ),
-      projected(command("2026-06-20T00:00:03.000Z"), 1),
-    ]);
-    const runningActivity = runningFeed.find((entry) => entry.type === "activity-group")
-      ?.activities[0];
-    const recoveredActivity = recoveredFeed.find((entry) => entry.type === "activity-group")
-      ?.activities[0];
-    if (runningActivity === undefined || recoveredActivity === undefined) {
-      throw new Error("Expected provider retry work-log activities.");
-    }
+      };
+      const runningFeed = buildThreadFeed([
+        projected(
+          {
+            ...retryBase,
+            status: "running",
+            title: "Provider retry",
+            completedAt: null,
+          },
+          0,
+        ),
+      ]);
+      const recoveredFeed = buildThreadFeed([
+        projected(
+          {
+            ...retryBase,
+            status: "completed",
+            title: "Provider recovered",
+          },
+          0,
+        ),
+      ]);
+      if (failureClass === "usage_limit") {
+        const recoveredActivity = recoveredFeed.flatMap((entry) =>
+          entry.type === "activity-group" ? entry.activities : [],
+        )[0];
+        expect(recoveredActivity).toMatchObject({ status: "success", icon: "check" });
+      }
+      const failedFeed = buildThreadFeed([
+        projected(
+          {
+            ...retryBase,
+            status: "failed",
+            title: "Provider retry failed",
+          },
+          0,
+        ),
+        projected(command("2026-06-20T00:00:03.000Z"), 1),
+      ]);
+      const runningActivity = runningFeed.find((entry) => entry.type === "activity-group")
+        ?.activities[0];
+      const recoveredActivity = recoveredFeed.find((entry) => entry.type === "activity-group")
+        ?.activities[0];
+      if (runningActivity === undefined || recoveredActivity === undefined) {
+        throw new Error("Expected provider retry work-log activities.");
+      }
 
-    expect(runningActivity).toMatchObject({
-      summary: "Provider retry",
-      status: "neutral",
-      toolLike: false,
-    });
-    expect(threadFeedActivityIsVisible(runningActivity)).toBe(true);
-    expect(recoveredActivity).toMatchObject({
-      summary: "Provider recovered",
-      status: "success",
-      toolLike: false,
-    });
-    const failedPresentation = deriveThreadFeedPresentation(
-      failedFeed,
-      { runId, status: "running", startedAt: null, completedAt: null },
-      new Set(),
-    );
-    expect(failedPresentation.map((entry) => entry.type)).toEqual([
-      "activity-group",
-      "work-toggle",
-    ]);
-    expect(
-      failedPresentation[0]?.type === "activity-group"
-        ? failedPresentation[0].activities[0]?.summary
-        : null,
-    ).toBe("Provider retry failed");
-  });
+      expect(runningActivity).toMatchObject({
+        summary: "Provider retry",
+        status: "neutral",
+        toolLike: false,
+      });
+      expect(threadFeedActivityIsVisible(runningActivity)).toBe(true);
+      expect(recoveredActivity).toMatchObject({
+        summary: "Provider recovered",
+        status: "success",
+        toolLike: false,
+      });
+      const failedPresentation = deriveThreadFeedPresentation(
+        failedFeed,
+        { runId, status: "running", startedAt: null, completedAt: null },
+        new Set(),
+      );
+      expect(failedPresentation.map((entry) => entry.type)).toEqual([
+        "activity-group",
+        "work-toggle",
+      ]);
+      expect(
+        failedPresentation[0]?.type === "activity-group"
+          ? failedPresentation[0].activities[0]?.summary
+          : null,
+      ).toBe("Provider retry failed");
+    },
+  );
 
   it.each(["pending", "running", "completed"] as const)(
     "omits %s task progress without hiding adjacent conversation items",

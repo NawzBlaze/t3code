@@ -433,7 +433,11 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "system_notice":
       return "warning";
     case "error":
-      return item.failure.class === "usage_limit" ? "warning" : "alert";
+      return item.failure.class === "usage_limit"
+        ? item.status === "completed"
+          ? "check"
+          : "warning"
+        : "alert";
     case "checkpoint":
     case "proposed_plan":
     case "todo_list":

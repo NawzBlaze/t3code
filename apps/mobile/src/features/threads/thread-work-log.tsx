@@ -890,7 +890,8 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const isSystemNotice = row.projectedItem.item.type === "system_notice";
   const isUsageLimit =
     row.projectedItem.item.type === "error" &&
-    row.projectedItem.item.failure.class === "usage_limit";
+    row.projectedItem.item.failure.class === "usage_limit" &&
+    row.projectedItem.item.status !== "completed";
   const iconIsDestructive =
     !isSystemNotice && !isUsageLimit && (row.icon === "alert" || row.icon === "warning");
   const failed = row.status === "failure";
