@@ -3577,8 +3577,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             );
             const resetAt = codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot));
             for (const item of (yield* Ref.get(limitedTurnItems)).values()) {
-              // Keep the stopped turn's reset when a later snapshot reports available quota.
-              if (resetAt === null || item.failure.resetAt === resetAt) continue;
+              // Fill late reset data once; later account windows do not change this stopped turn.
+              if (resetAt === null || item.failure.resetAt != null) continue;
               const updated = {
                 ...item,
                 updatedAt: yield* DateTime.now,
